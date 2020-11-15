@@ -5,7 +5,8 @@ import logging
 from time import sleep
 
 import redis
-from telegram.vendor.ptb_urllib3.urllib3.exceptions import ProtocolError, HTTPError
+from telegram.vendor.ptb_urllib3.urllib3.exceptions import ProtocolError, HTTPError as tele_HTTPError
+from urllib3.exceptions import HTTPError
 
 __author__ = 'ilov3'
 logger = logging.getLogger(__name__)
@@ -26,14 +27,14 @@ class Options(enum.Enum):
     PROCESS_FILTER_SELECT = 1
     BRAND = 2
     MODEL = 3
-    COUNTRY = 4
-    CITY = 5
+    DISTANCE = 4
+    CITY_SELECTED = 5
     PRICE = 6
     ANY_MODEL = 7
     ANY_CITY = 8
     FINISH_FILTER = 9
     MODEL_SELECTED = 10
-    CITY_SELECTED = 11
+    RADIUS_SET = 11
     CANCEL = 12
 
 
@@ -64,8 +65,8 @@ def send_message(bot, chat_id, message, retries=5):
     while retries:
         try:
             bot.send_message(chat_id, message)
-            break
-        except (ProtocolError, HTTPError) as e:
+            return True
+        except (ProtocolError, HTTPError, tele_HTTPError) as e:
             logger.error(f'Error while sending message: {e}. Retries: {retries}')
             sleep(int(10 / retries))
             retries -= 1
@@ -77,7 +78,7 @@ def get_brand_display(brand_key):
 
 
 def get_model_display(brand_key, model_key):
-    return R.hget(brand_key, model_key).decode('utf-8')
+    return R.hget(f'{brand_key}:models', model_key).decode('utf-8')
 
 
 def get_filter_display(filters):

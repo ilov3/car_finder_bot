@@ -5,11 +5,12 @@ from threading import Thread
 import os
 
 import pickle
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, ConversationHandler, CallbackQueryHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, ReplyKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, ConversationHandler, CallbackQueryHandler, MessageHandler, Filters
 from telegram.utils import request
 
-from util import send_message, R, is_subscribed, Options, build_menu, get_callback_data, REQUEST_KWARGS, get_brand_display, get_model_display, \
+from car_finder_bot.util import send_message, R, is_subscribed, Options, build_menu, get_callback_data, REQUEST_KWARGS, get_brand_display, \
+    get_model_display, \
     get_filter_display
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -25,9 +26,11 @@ def wait_for_sales(chat_id, bot):
             new_sale = R.brpop(chat_id)
             message = new_sale[1].decode('utf-8')
             logger.info(f'Got new message {message}')
-            send_message(bot, chat_id, message)
+            sent = send_message(bot, chat_id, message)
+            if not sent:
+                R.lpush(chat_id, new_sale)
         except Exception as e:
-            logger.error(f'Error occurred: {e}')
+            logger.error(f'Error occurred: {e}. Chat id: {chat_id}')
 
 
 def start(update, context):
@@ -58,15 +61,15 @@ def filter_sales(update, context):
         }
     button_list = [
         InlineKeyboardButton(text="По марке/модели автомобиля", callback_data=f'{Options.BRAND.value}'),
-        InlineKeyboardButton(text="По стране/городу объявления", callback_data=f'{Options.COUNTRY.value}'),
-        InlineKeyboardButton(text="По цене объявления", callback_data=f'{Options.PRICE.value}'),
+        # InlineKeyboardButton(text="По радиусу поиска объявления", callback_data=f'{Options.DISTANCE.value}'),
+        # InlineKeyboardButton(text="По цене автомобиля", callback_data=f'{Options.PRICE.value}'),
         InlineKeyboardButton(text="Отмена", callback_data=f'{Options.CANCEL.value}'),
     ]
     if update.message:
         reply_markup = InlineKeyboardMarkup(build_menu(button_list, n_cols=1), one_time_keyboard=True)
         update.message.reply_text(text="Выберите фильтр", reply_markup=reply_markup)
     else:
-        button_list.append(InlineKeyboardButton(text="Финиш", callback_data=f'{Options.FINISH_FILTER.value}'))
+        button_list.append(InlineKeyboardButton(text="Готово", callback_data=f'{Options.FINISH_FILTER.value}'))
         reply_markup = InlineKeyboardMarkup(build_menu(button_list, n_cols=1), one_time_keyboard=True)
         filter_text = get_filter_display(context.user_data['filter']['display'])
         update.callback_query.edit_message_text(text=f"Текущий фильтр:\n{filter_text}\n\nПродолжите настройку фильтра, либо закончите нажав Финиш")
@@ -83,9 +86,9 @@ def process_filter_select(update, context):
         if callback_data == Options.BRAND.value:
             process_brand_filter(update, context)
             return Options.MODEL.value
-        if callback_data == Options.COUNTRY.value:
-            process_country_filter(update, context)
-            return Options.CITY.value
+        if callback_data == Options.DISTANCE.value:
+            process_distance_filter(update, context)
+            return Options.CITY_SELECTED.value
         if callback_data == Options.PRICE.value:
             process_price_filter(update, context)
             return Options.SELECT_FILTER.value
@@ -97,13 +100,39 @@ def process_filter_select(update, context):
             return ConversationHandler.END
 
 
+def process_distance_filter(update, context):
+    cities = R.hgetall('1:cities').items()
+    cities = sorted(cities, key=lambda item: item[1])
+    button_list = [
+        KeyboardButton(text=name.decode('utf-8')) for _, name in cities
+    ]
+    reply_markup = ReplyKeyboardMarkup(build_menu(button_list, n_cols=1), one_time_keyboard=True)
+    context.bot.send_message(update.effective_chat.id, 'Выберите ваш город', reply_markup=reply_markup)
+
+
+def process_city_selected(update, context):
+    city_name = update.message.text
+    if city_name:
+        context.user_data['filter']['raw']['city__name'] = city_name
+        context.user_data['filter']['display']['Город'] = city_name
+        update.message.reply_text('Задайте радиус в километрах, в котором необходимо искать объявления')
+        return Options.RADIUS_SET.value
+
+
+def process_radius_set(update, context):
+    radius = update.message.text
+    if radius:
+        context.user_data['filter']['raw']['radius'] = radius
+        context.user_data['filter']['display']['Город'] = f"context.user_data['filter']['display']['Город'] + {radius}"
+        return Options.SELECT_FILTER.value
+
+
 def process_cancel_filter(update, context):
     if 'filter' in context.user_data:
         context.user_data.pop('filter')
-
-
-def process_country_filter(update, context):
-    pass
+    # reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton('OK', callback_data='ok')]], one_time_keyboard=True)
+    update.callback_query.edit_message_text(text="Создание фильтра отменено")
+    # update.callback_query.edit_message_reply_markup(reply_markup=reply_markup)
 
 
 def process_price_filter(update, context):
@@ -111,7 +140,7 @@ def process_price_filter(update, context):
 
 
 def process_finish_filter(update, context):
-    pass
+    logger.info('Filter created!')
 
 
 def process_brand_filter(update, context):
@@ -120,6 +149,7 @@ def process_brand_filter(update, context):
     button_list = [
         InlineKeyboardButton(text=brand.decode('utf-8'), callback_data=f'{brand_id.decode("utf-8")}:models') for brand_id, brand in brands
     ]
+    button_list.append(InlineKeyboardButton(text="Отмена", callback_data=f'{Options.CANCEL.value}'))
     reply_markup = InlineKeyboardMarkup(build_menu(button_list, n_cols=1), one_time_keyboard=True)
     update.callback_query.edit_message_text(text="Выберите брэнд")
     update.callback_query.edit_message_reply_markup(reply_markup=reply_markup)
@@ -129,13 +159,15 @@ def filter_by_model(update, context):
     logger.info('by model')
     callback_data = get_callback_data(update, t=str)
     if callback_data:
-        context.user_data['filter']['raw']['brand_id'] = callback_data
+        context.user_data['filter']['raw']['brand_id'] = callback_data.split(':')[0]
         context.user_data['filter']['display']['Марка'] = get_brand_display(callback_data)
         models = R.hgetall(callback_data).items()
         models = sorted(models, key=lambda item: item[1])
         button_list = [
             InlineKeyboardButton(text=model.decode('utf-8'), callback_data=f'{model_id.decode("utf-8")}') for model_id, model in models
         ]
+        button_list.append(InlineKeyboardButton(text='Любая', callback_data=str(Options.ANY_MODEL.value)))
+        button_list.append(InlineKeyboardButton(text="Отмена", callback_data=f'{Options.CANCEL.value}'))
         reply_markup = InlineKeyboardMarkup(build_menu(button_list, n_cols=1), one_time_keyboard=True)
         update.callback_query.edit_message_text(text=f"Выберите модель {get_brand_display(callback_data)}")
         update.callback_query.edit_message_reply_markup(reply_markup=reply_markup)
@@ -146,18 +178,17 @@ def model_selected(update, context):
     model_id = get_callback_data(update)
     if model_id and model_id != Options.ANY_MODEL.value:
         context.user_data['filter']['raw']['model_id'] = model_id
-        context.user_data['filter']['display']['Модель'] = get_model_display(context.user_data['filter']['raw']['brand_id'], model_id)
+        model_display = get_model_display(context.user_data['filter']['raw']['brand_id'], model_id)
     else:
-        context.user_data['filter']['display']['Модель'] = 'Любая'
+        model_display = 'Любая'
+    context.user_data['filter']['display']['Модель'] = model_display
+    button_list = [
+        InlineKeyboardButton(text='Далее', callback_data='next'),
+    ]
+    reply_markup = InlineKeyboardMarkup(build_menu(button_list, n_cols=1), one_time_keyboard=True)
+    update.callback_query.edit_message_text(text=f"Вы выбрали модель: {model_display}")
+    update.callback_query.edit_message_reply_markup(reply_markup=reply_markup)
     return Options.SELECT_FILTER.value
-
-
-def city_selected(update, context):
-    pass
-
-
-def filter_by_city(update, context):
-    logger.info('by city')
 
 
 def filter_by_price(update, context):
@@ -183,10 +214,10 @@ def main():
             Options.SELECT_FILTER: [CallbackQueryHandler(filter_sales)],
             Options.MODEL.value: [CallbackQueryHandler(filter_by_model)],
             Options.MODEL_SELECTED.value: [CallbackQueryHandler(model_selected)],
-            Options.CITY.value: [CallbackQueryHandler(filter_by_city)],
-            Options.CITY_SELECTED.value: [CallbackQueryHandler(city_selected)],
+            Options.CITY_SELECTED.value: [MessageHandler(Filters.text, process_city_selected)],
             Options.PRICE.value: [CallbackQueryHandler(filter_by_price)],
             Options.PROCESS_FILTER_SELECT.value: [CallbackQueryHandler(process_filter_select)],
+            Options.RADIUS_SET.value: [MessageHandler(Filters.text, process_radius_set)],
         },
         fallbacks=[CallbackQueryHandler(filter_sales)],
     )
@@ -208,7 +239,3 @@ def main():
     # SIGABRT. This should be used most of the time, since start_polling() is
     # non-blocking and will stop the bot gracefully.
     updater.idle()
-
-
-if __name__ == '__main__':
-    main()
