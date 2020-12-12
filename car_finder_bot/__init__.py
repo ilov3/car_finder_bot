@@ -4,5 +4,7 @@ import logging
 
 __author__ = 'ilov3'
 
+import os
+
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s :: %(levelname)s: %(name)s: %(funcName)s: %(lineno)d: %(message)s')
 logging.getLogger('telegram').setLevel(logging.INFO)

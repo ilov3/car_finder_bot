@@ -4,14 +4,12 @@ import logging
 from threading import Thread
 import os
 
-import pickle
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, ReplyKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Bot
 from telegram.ext import Updater, CommandHandler, ConversationHandler, CallbackQueryHandler, MessageHandler, Filters
-from telegram.utils import request
 
-from car_finder_bot.util import send_message, R, is_subscribed, Options, build_menu, get_callback_data, REQUEST_KWARGS, get_brand_display, \
+from car_finder_bot.util import send_message, R, is_subscribed, Options, build_menu, get_callback_data, get_brand_display, \
     get_model_display, \
-    get_filter_display
+    get_filter_display, get_token
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
@@ -19,8 +17,9 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 
-def wait_for_sales(chat_id, bot):
+def wait_for_sales(chat_id):
     logger.info(f'New subscriber waiting for updates: {chat_id}')
+    bot = Bot(get_token())
     while True:
         try:
             new_sale = R.brpop(chat_id)
@@ -36,8 +35,8 @@ def wait_for_sales(chat_id, bot):
 def start(update, context):
     chat_id = update.message.chat_id
     if not is_subscribed(chat_id):
-        R.hset('telegram_chat_ids', chat_id, pickle.dumps(context.bot.__reduce__()))
-        t = Thread(target=wait_for_sales, args=(chat_id, context.bot))
+        R.hset('telegram_chat_ids', chat_id, 0)
+        t = Thread(target=wait_for_sales, args=(chat_id,))
         t.start()
         update.message.reply_text('Ждите уведомления о новых объявлениях на продажу')
     else:
@@ -201,8 +200,7 @@ def error(update, context):
 
 
 def main():
-    updater = Updater(os.environ.get('TOKEN', None), request_kwargs=REQUEST_KWARGS, use_context=True)
-
+    updater = Updater(os.environ.get('TOKEN', None))
     # Get the dispatcher to register handlers
     dp = updater.dispatcher
     dp.add_handler(CommandHandler("start", start))
@@ -226,11 +224,8 @@ def main():
     # Start the Bot
     updater.start_polling(allowed_updates=[])
     try:
-        for chat_id, pickled_bot in R.hgetall('telegram_chat_ids').items():
-            bot_class, (token, base_url, file_base_url) = pickle.loads(pickled_bot)
-            proxy_request = request.Request(**REQUEST_KWARGS)
-            bot = bot_class(token, base_url, file_base_url, proxy_request)
-            t = Thread(target=wait_for_sales, args=(chat_id.decode('utf-8'), bot))
+        for chat_id, _ in R.hgetall('telegram_chat_ids').items():
+            t = Thread(target=wait_for_sales, args=(chat_id.decode('utf-8'),))
             t.start()
     except AttributeError:
         pass

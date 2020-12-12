@@ -2,24 +2,16 @@
 # Owner: Bulat <bulat.kurbangaliev@cinarra.com>
 import enum
 import logging
+import os
 from time import sleep
 
 import redis
 from telegram.vendor.ptb_urllib3.urllib3.exceptions import ProtocolError, HTTPError as tele_HTTPError
-from urllib3.exceptions import HTTPError
 
 __author__ = 'ilov3'
 logger = logging.getLogger(__name__)
 
-REQUEST_KWARGS = {
-    'proxy_url': 'socks5://116.203.127.254:1080',
-    'urllib3_proxy_kwargs': {
-        'username': 'nkbnt',
-        'password': '_nkbnt_pass_',
-    }
-}
-
-R = redis.Redis()
+R = redis.Redis(os.getenv('REDIS_HOST', 'localhost'))
 
 
 class Options(enum.Enum):
@@ -66,7 +58,7 @@ def send_message(bot, chat_id, message, retries=5):
         try:
             bot.send_message(chat_id, message)
             return True
-        except (ProtocolError, HTTPError, tele_HTTPError) as e:
+        except (ProtocolError, tele_HTTPError) as e:
             logger.error(f'Error while sending message: {e}. Retries: {retries}')
             sleep(int(10 / retries))
             retries -= 1
@@ -83,3 +75,7 @@ def get_model_display(brand_key, model_key):
 
 def get_filter_display(filters):
     return '\n'.join([f'{f}: {value}' for f, value in filters.items()])
+
+
+def get_token():
+    return os.environ.get('TOKEN')
